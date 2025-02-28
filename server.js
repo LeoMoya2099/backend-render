@@ -6,6 +6,8 @@ const cors = require('cors');
 const axios = require('axios');
 
 const app = express(); 
+const jwt = require('jsonwebtoken');
+const SECRET_KEY = process.env.SECRET_KEY || 'tu_clave_secreta'; // Usa una clave secreta segura en producción
 
 // Middleware
 app.use(bodyParser.json());
@@ -59,7 +61,7 @@ app.get("/dolar", async (req, res) => {
 });
 
 // Rutas de usuario
-app.post('/check-balance', async (req, res) => {
+app.post('/check-balance', authenticateToken, async (req, res) => {
   const { email } = req.body;
 
   try {
@@ -70,6 +72,58 @@ app.post('/check-balance', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).send({ error: 'Error al obtener el saldo' });
+  }
+});
+
+app.post('/deposit', authenticateToken, async (req, res) => {
+  const { email, amount } = req.body;
+
+  if (!amount || amount <= 0) return res.status(400).send({ error: 'Cantidad inválida' });
+
+  try {
+    const usuario = await User.findOne({ email });
+    if (!usuario) return res.status(404).send({ error: 'Usuario no encontrado' });
+
+    usuario.balance += amount;
+    await usuario.save();
+    res.status(200).send({ message: 'Depósito exitoso', balance: usuario.balance });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ error: 'Error al depositar dinero' });
+  }
+});
+
+app.post('/withdraw', authenticateToken, async (req, res) => {
+  const { email, amount } = req.body;
+
+  if (!amount || amount <= 0) return res.status(400).send({ error: 'Cantidad inválida' });
+
+  try {
+    const usuario = await User.findOne({ email });
+    if (!usuario) return res.status(404).send({ error: 'Usuario no encontrado' });
+
+    if (usuario.balance < amount) return res.status(400).send({ error: 'Fondos insuficientes' });
+
+    usuario.balance -= amount;
+    await usuario.save();
+    res.status(200).send({ message: 'Retiro exitoso', balance: usuario.balance });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ error: 'Error al retirar dinero' });
+  }
+});
+
+app.delete('/usuarios/:email', authenticateToken, async (req, res) => {
+  const { email } = req.params;
+
+  try {
+    const usuarioEliminado = await User.findOneAndDelete({ email });
+    if (!usuarioEliminado) return res.status(404).send({ error: 'Usuario no encontrado' });
+
+    res.send({ message: 'Usuario eliminado exitosamente' });
+  } catch (error) {
+    console.error('Error al eliminar usuario:', error);
+    res.status(500).send({ error: 'Error interno del servidor' });
   }
 });
 
@@ -91,7 +145,7 @@ app.post('/deposit', async (req, res) => {
   }
 });
 
-app.post('/withdraw', async (req, res) => {
+app.post('/withdraw', authenticateToken, async (req, res) => {
   const { email, amount } = req.body;
 
   if (!amount || amount <= 0) return res.status(400).send({ error: 'Cantidad inválida' });
@@ -110,6 +164,7 @@ app.post('/withdraw', async (req, res) => {
     res.status(500).send({ error: 'Error al retirar dinero' });
   }
 });
+
 
 app.post('/registro', async (req, res) => {
   const { nombre, apellido, email, contraseña } = req.body;
@@ -130,7 +185,9 @@ app.post('/login', async (req, res) => {
   try {
     const usuario = await User.findOne({ email, contraseña });
     if (usuario) {
-      res.status(200).send({ message: 'Inicio de sesión exitoso' });
+      // Generar un token JWT
+      const token = jwt.sign({ userId: usuario._id, email: usuario.email }, SECRET_KEY, { expiresIn: '1h' });
+      res.status(200).send({ message: 'Inicio de sesión exitoso', token });
     } else {
       res.status(401).send({ error: 'Credenciales incorrectas' });
     }
@@ -139,8 +196,20 @@ app.post('/login', async (req, res) => {
     res.status(500).send({ error: 'Error al iniciar sesión' });
   }
 });
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Formato: Bearer <token>
 
-app.delete('/usuarios/:email', async (req, res) => {
+  if (!token) return res.status(401).send({ error: 'Token no proporcionado' });
+
+  jwt.verify(token, SECRET_KEY, (err, user) => {
+    if (err) return res.status(403).send({ error: 'Token inválido o expirado' });
+    req.user = user;
+    next();
+  });
+}
+
+app.delete('/usuarios/:email', authenticateToken, async (req, res) => {
   const { email } = req.params;
 
   try {
